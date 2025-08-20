@@ -45,30 +45,37 @@ export const LanguageProvider = ({ children }) => {
   };
 
   // Helper function to get translated text
-  const t = (key) => {
+  const t = (key, isOption = false) => {
     if (!key) return '';
     
     try {
       // For bilingual mode, show both English and Marathi
-      if (language === 'bilingual') {
+      if (language === 'bilingual' && !isOption) {
         const enText = getNestedTranslation(translations['en'], key) || key;
         const mrText = getNestedTranslation(translations['mr'], key) || key;
         return (
-          <>
-            <div>{enText}</div>
-            <div style={{ fontSize: '0.9em', color: '#666' }}>{mrText}</div>
-          </>
+          <span>
+            <span>{enText}</span>
+            <span style={{ display: 'block', fontSize: '0.9em', color: '#666' }}>{mrText}</span>
+          </span>
         );
       }
       
-      // For single language mode
+      // For single language mode or when inside option elements
       const langToUse = language === 'bilingual' ? 'en' : language;
       const langTranslations = translations[langToUse] || translations['en'];
-      return getNestedTranslation(langTranslations, key) || key;
+      const text = getNestedTranslation(langTranslations, key) || key;
+      
+      // Return plain text for option elements to prevent hydration errors
+      if (isOption) {
+        return text;
+      }
+      
+      return <span>{text}</span>;
       
     } catch (error) {
       console.error('Translation error:', error);
-      return key;
+      return isOption ? key : <span>{key}</span>;
     }
   };
 

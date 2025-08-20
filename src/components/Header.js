@@ -14,7 +14,7 @@ const Header = () => {
         <div className="support-info">
           <Phone size={16} />
           <span>{t('header.customerSupport')}</span>
-          <span className="support-number">+91 98765 43210</span>
+          <span className="support-number">+918149491025</span>
         </div>
       </div>
     </header>
