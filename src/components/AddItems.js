@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useLanguage } from '../context/LanguageContext';
 import { Package, AlertTriangle, CheckCircle, Printer, Barcode } from 'lucide-react';
 import { createReceipt, printReceipt } from '../utils/thermalPrinter';
+import API_CONFIG from '../config';
+import axios from 'axios';
 
 const AddItems = () => {
   const { t } = useLanguage();
@@ -22,9 +24,7 @@ const AddItems = () => {
   const [isScanning, setIsScanning] = useState(false);
   const barcodeInputRef = useRef(null);
   let barcodeBuffer = '';
-  let barcodeTimeout = null;
 
-  // Initialize form with default values
   const resetForm = () => ({
     itemName: '',
     barcode: null,
@@ -38,89 +38,39 @@ const AddItems = () => {
     unit: 'pieces'
   });
 
-  // Handle barcode scanner input
-  useEffect(() => {
-    const handleBarcodeInput = (e) => {
-      if (e.target === barcodeInputRef.current) return; // Skip if typing in barcode input
-      
-      if (e.key === 'Enter' && barcodeBuffer.length > 0) {
-        // Process the barcode
-        handleBarcodeScan(barcodeBuffer);
-        barcodeBuffer = '';
-        clearTimeout(barcodeTimeout);
-      } else if (e.key.length === 1) {
-        // Add to buffer and set timeout to clear it
-        barcodeBuffer += e.key;
-        clearTimeout(barcodeTimeout);
-        barcodeTimeout = setTimeout(() => {
-          barcodeBuffer = '';
-        }, 100); // Small delay to detect end of barcode
-      }
-    };
-
-    if (isScanning) {
-      window.addEventListener('keydown', handleBarcodeInput);
-    }
-
-    return () => {
-      window.removeEventListener('keydown', handleBarcodeInput);
-      clearTimeout(barcodeTimeout);
-    };
-  }, [isScanning]);
-
-  // Handle barcode scan
-  const handleBarcodeScan = async (barcode) => {
-    // Ensure barcode is a string and trim whitespace
-    const barcodeStr = typeof barcode === 'string' 
-      ? barcode.trim() 
-      : barcode?.toString()?.trim() || '';
-    
-    // If barcode is empty, don't proceed
-    if (!barcodeStr) {
-      setFormData(prev => ({
-        ...prev,
-        barcode: null
-      }));
-      return;
-    }
-
-    try {
-      const response = await fetch(`/api/items/barcode/${encodeURIComponent(barcodeStr)}`);
-      
-      if (response.ok) {
-        const existingItem = await response.json();
-        // Auto-fill form with existing item data
-        setFormData(prev => ({
-          ...prev,
-          itemName: existingItem.itemName || '',
-          barcode: existingItem.barcode ? String(existingItem.barcode) : barcodeStr,
-          category: existingItem.category || 'groceries',
-          purchasePrice: existingItem.purchasePrice || '',
-          mrp: existingItem.mrp || '',
-          sellPrice: existingItem.sellPrice || '',
-          minSellPrice: existingItem.minSellPrice || '',
-          currentStock: existingItem.currentStock || '',
-          minStockLevel: existingItem.minStockLevel || '5',
-          unit: existingItem.unit || 'pieces'
-        }));
-      } else {
-        // Item not found, just set the barcode
-        setFormData(prev => ({
-          ...prev,
-          barcode: barcodeStr
-        }));
-      }
-    } catch (error) {
-      console.error('Error checking barcode:', error);
-      // Still set the barcode even if there's an error
-      setFormData(prev => ({
-        ...prev,
-        barcode: barcodeStr
-      }));
+  const isLowStock = () => {
+    return formData.currentStock && formData.minStockLevel && 
+           parseFloat(formData.currentStock) <= parseFloat(formData.minStockLevel);
+  };
+  
+  const calculateStockValue = () => {
+    if (!formData.purchasePrice || !formData.currentStock) return '0.00';
+    return (parseFloat(formData.purchasePrice) * parseFloat(formData.currentStock)).toFixed(2);
+  };
+  
+  const handleReset = () => {
+    setFormData(resetForm());
+    setErrors({});
+  };
+  
+  const handlePrint = () => {
+    const receipt = createReceipt({
+      items: [{
+        name: formData.itemName,
+        barcode: formData.barcode,
+        price: formData.sellPrice,
+        quantity: formData.currentStock
+      }]
+    });
+    printReceipt(receipt);
+  };
+  const handleInputChange = (field, value) => {
+    setFormData(prev => ({ ...prev, [field]: value }));
+    if (errors[field]) {
+      setErrors(prev => ({ ...prev, [field]: '' }));
     }
   };
 
-  // Toggle barcode scanning mode
   const toggleBarcodeScanning = () => {
     setIsScanning(!isScanning);
     if (!isScanning && barcodeInputRef.current) {
@@ -128,78 +78,9 @@ const AddItems = () => {
     }
   };
 
-  const calculateStockValue = () => {
-    const stock = parseFloat(formData.currentStock) || 0;
-    const purchasePrice = parseFloat(formData.purchasePrice) || 0;
-    return (stock * purchasePrice).toFixed(2);
-  };
-
-  const isLowStock = () => {
-    const currentStock = parseFloat(formData.currentStock) || 0;
-    const minStock = parseFloat(formData.minStockLevel) || 0;
-    return currentStock > 0 && minStock > 0 && currentStock <= minStock;
-  };
-
-  const handleInputChange = (e) => {
-    const { name, value, type, inputMode } = e.target;
-    
-    // Special handling for barcode to ensure it's always a string
-    if (name === 'barcode') {
-      setFormData(prev => ({
-        ...prev,
-        [name]: value || ''
-      }));
-      return;
-    }
-    
-    // For other fields, use the existing logic
-    const sanitizedValue = value === undefined || value === null ? '' : String(value);
-    
-    // Handle numeric inputs
-    if ((type === 'text' && (inputMode === 'decimal' || inputMode === 'numeric')) || 
-        name === 'purchasePrice' || 
-        name === 'mrp' || 
-        name === 'sellPrice' || 
-        name === 'minSellPrice' || 
-        name === 'currentStock' || 
-        name === 'minStockLevel') {
-      
-      // Only allow numbers and decimal point
-      let numericValue = sanitizedValue === '' ? '' : String(sanitizedValue).replace(/[^0-9.]/g, '');
-      
-      // Prevent multiple decimal points
-      const decimalCount = (numericValue.match(/\./g) || []).length;
-      if (decimalCount > 1) {
-        const parts = numericValue.split('.');
-        numericValue = parts[0] + '.' + parts.slice(1).join('');
-      }
-      
-      setFormData(prev => ({
-        ...prev,
-        [name]: numericValue
-      }));
-      
-      // Clear any existing error for this field
-      if (errors[name]) {
-        setErrors(prev => ({
-          ...prev,
-          [name]: ''
-        }));
-      }
-    } else {
-      setFormData(prev => ({
-        ...prev,
-        [name]: sanitizedValue
-      }));
-      
-      // Clear any existing error for this field
-      if (errors[name]) {
-        setErrors(prev => ({
-          ...prev,
-          [name]: ''
-        }));
-      }
-    }
+  const handleBarcodeDetected = (barcode) => {
+    setFormData(prev => ({ ...prev, barcode }));
+    setIsScanning(false);
   };
 
   const handleSubmit = async (e) => {
@@ -226,6 +107,7 @@ const AddItems = () => {
     try {
       // Format the data to match the backend DTO
       const itemData = {
+        name: formData.itemName.trim(),
         itemName: formData.itemName.trim(),
         barcode: formData.barcode === null ? null : formData.barcode.trim(),
         category: formData.category,
@@ -238,13 +120,16 @@ const AddItems = () => {
         unit: formData.unit
       };
       
-      const response = await fetch('/api/items', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(itemData),
-      });
+      const response = await fetch(
+        `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.ITEMS}`, 
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(itemData),
+        }
+      );
       
       if (!response.ok) {
         const errorData = await response.json();
@@ -263,69 +148,9 @@ const AddItems = () => {
       console.error('Error saving item:', error);
       setErrors({ submit: error.message });
     }
-  };
-
-  const handleReset = () => {
-    setFormData(resetForm());
-    setErrors({});
-  };
-
-  const handlePrint = async () => {
-    try {
-      // Format the current date and time
-      const now = new Date();
-      const formattedDate = now.toLocaleDateString('en-IN', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric'
-      });
-      const formattedTime = now.toLocaleTimeString('en-IN', {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true
-      });
-
-      // Create a receipt with all item details
-      const receipt = createReceipt({
-        header: 'ITEM DETAILS',
-        items: [{
-          name: formData.itemName || 'New Item',
-          quantity: 1,
-          price: parseFloat(formData.sellPrice) || 0
-        }],
-        details: [
-          `Category: ${formData.category || '-'}`,
-          `Purchase Price: ₹${formData.purchasePrice || '0.00'}`,
-          `MRP: ₹${formData.mrp || '0.00'}`,
-          `Sell Price: ₹${formData.sellPrice || '0.00'}`,
-          `Min Sell Price: ₹${formData.minSellPrice || '0.00'}`,
-          `Current Stock: ${formData.currentStock || '0'} ${formData.unit || 'units'}`,
-          `Min Stock Level: ${formData.minStockLevel || '0'}`,
-          `Stock Value: ₹${calculateStockValue()}`
-        ],
-        subtotal: parseFloat(formData.sellPrice) || 0,
-        tax: 0,
-        total: parseFloat(formData.sellPrice) || 0,
-        footer: 'Thank you for using our system!',
-        date: `${formattedDate} ${formattedTime}`
-      });
-
-      // Print the receipt
-      const success = await printReceipt(receipt);
-      
-      if (!success) {
-        console.error('Failed to print receipt');
-        // Fallback to browser print
-        window.print();
-      }
-    } catch (error) {
-      console.error('Print error:', error);
-      // Fallback to browser print
-      window.print();
-    }
-  };
-
-  return (
+    
+    };
+ return (
     <div className="content-container">
       <h2 className="page-title">
         <Package size={28} style={{ marginRight: '10px' }} />

@@ -3,6 +3,9 @@ import { FileText, Search, Plus, Minus, User, Printer, MessageCircle, CreditCard
 import { useLanguage } from '../context/LanguageContext';
 import { translations } from '../translations/translations';
 import { getDisplayText } from '../utils/textUtils';
+import ReceiptGenerator from './ReceiptGenerator';
+import { jsPDF } from 'jspdf';
+import { generateReceipt } from '../utils/receiptGenerator';
 
 const NewBill = () => {
   const { language } = useLanguage();
@@ -95,27 +98,22 @@ const NewBill = () => {
   // Handle barcode scanner input
   useEffect(() => {
     const handleBarcodeInput = async (e) => {
-      if (e.target === searchInputRef.current) return; // Skip if typing in search input
+      if (!isScanning || e.target === searchInputRef.current) return;
+      e.preventDefault();
       
-      if (e.key === 'Enter' && barcodeBuffer.length > 0) {
-        // Process the barcode
-        await handleBarcodeScan(barcodeBuffer);
+      barcodeBuffer += e.key;
+      clearTimeout(barcodeTimeout);
+      
+      barcodeTimeout = setTimeout(async () => {
+        if (barcodeBuffer.length >= 3) {
+          console.log('Processing barcode:', barcodeBuffer);
+          await handleBarcodeScan(barcodeBuffer);
+        }
         barcodeBuffer = '';
-        clearTimeout(barcodeTimeout);
-      } else if (e.key.length === 1) {
-        // Add to buffer and set timeout to clear it
-        barcodeBuffer += e.key;
-        clearTimeout(barcodeTimeout);
-        barcodeTimeout = setTimeout(() => {
-          barcodeBuffer = '';
-        }, 100); // Small delay to detect end of barcode
-      }
+      }, 100);
     };
-
-    if (isScanning) {
-      window.addEventListener('keydown', handleBarcodeInput);
-    }
-
+  
+    window.addEventListener('keydown', handleBarcodeInput);
     return () => {
       window.removeEventListener('keydown', handleBarcodeInput);
       clearTimeout(barcodeTimeout);
@@ -125,27 +123,106 @@ const NewBill = () => {
   // Handle barcode scan
   const handleBarcodeScan = async (barcode) => {
     try {
-      const response = await fetch(`/api/items/barcode/${barcode}`);
+      setLoading(true);
+      setMessage('');
+      
+      // Call your API to search by barcode
+      const response = await fetch(`http://localhost:8080/api/items/barcode/${barcode.trim()}`);
+      
       if (response.ok) {
         const item = await response.json();
-        // Add item to cart
-        addToCart(item);
+        
+        if (item) {
+          // Format the item to match your cart item structure
+          const cartItem = {
+            id: item.id,
+            itemName: item.itemName,
+            itemCode: item.itemCode,
+            mrp: item.mrp,
+            sellPrice: item.sellPrice,
+            purchasePrice: item.purchasePrice,
+            currentStock: item.currentStock,
+            unit: item.unit || 'pcs',
+            quantity: 1,
+            total: item.sellPrice * 1 // Default quantity 1
+          };
+          
+          // Check if item already exists in cart
+          const existingItemIndex = cart.findIndex(cartItem => cartItem.id === item.id);
+          
+          if (existingItemIndex >= 0) {
+            // Update quantity if item exists
+            const updatedCart = [...cart];
+            const newQty = updatedCart[existingItemIndex].quantity + 1;
+            
+            // Check stock availability
+            if (newQty <= item.currentStock) {
+              updatedCart[existingItemIndex].quantity = newQty;
+              updatedCart[existingItemIndex].total = newQty * item.sellPrice;
+              setCart(updatedCart);
+              
+              // Show success message with translation
+              setMessage(
+                getDisplayText(
+                  translations.pages.newBill.itemUpdated, 
+                  language,
+                  { itemName: item.itemName, quantity: newQty }
+                )
+              );
+              setTimeout(() => setMessage(''), 2000);
+            } else {
+              setMessage(getDisplayText(translations.pages.newBill.insufficientStock, language));
+            }
+          } else {
+            // Add new item to cart
+            if (item.currentStock > 0) {
+              setCart([...cart, cartItem]);
+              
+              // Show success message with translation
+              setMessage(
+                getDisplayText(
+                  translations.pages.newBill.itemAdded, 
+                  language,
+                  { itemName: item.itemName }
+                )
+              );
+              setTimeout(() => setMessage(''), 2000);
+            } else {
+              setMessage(getDisplayText(translations.pages.newBill.outOfStock, language));
+            }
+          }
+        } else {
+          // Item not found, search by barcode
+          setSearchTerm(barcode);
+          searchProducts(barcode);
+        }
       } else {
-        // Item not found, search by barcode
-        setSearchTerm(barcode);
-        searchProducts(barcode);
+        // Handle API error
+        const error = await response.json();
+        setMessage(error.message || 'Error processing barcode');
       }
     } catch (error) {
       console.error('Error processing barcode:', error);
+      setMessage('Error processing barcode. Please try again.');
+    } finally {
+      setLoading(false);
     }
   };
 
   // Toggle barcode scanning mode
   const toggleBarcodeScanning = () => {
-    setIsScanning(!isScanning);
-    if (!isScanning && searchInputRef.current) {
-      searchInputRef.current.focus();
+    const newState = !isScanning;
+    setIsScanning(newState);
+    if (newState) {
+      setMessage('Barcode scanning mode: ON - Scan a barcode');
+      document.activeElement.blur();
+    } else {
+      setMessage('Barcode scanning mode: OFF');
+      if (searchInputRef.current) {
+        searchInputRef.current.focus();
+      }
     }
+    setTimeout(() => setMessage(''), 3000);
   };
 
   // Add item to cart
@@ -221,7 +298,7 @@ const NewBill = () => {
   const grandTotal = subtotal;
 
   // Save bill functions
-  const saveBill = async (type = 'cash') => {
+  const saveBill = async (type = 'cash', shouldGenerateReceipt = false) => {
     if (cart.length === 0) {
       setMessage('Please add items to the cart first');
       return;
@@ -230,25 +307,33 @@ const NewBill = () => {
     try {
       setLoading(true);
       
-      // Prepare the bill data
+      // Calculate tax and discount (set to 0 for now, can be enhanced later)
+      const taxAmount = 0;
+      const discountAmount = 0;
+      const finalTotal = subtotal + taxAmount - discountAmount;
+      
+      // Prepare the bill data in the format expected by backend
       const billData = {
+        billNumber: `BILL-${Date.now()}`,
         customerName: customerName || 'Walk-in Customer',
         phoneNumber: phoneNumber || '',
         address: address || '',
         items: cart.map(item => ({
           itemId: item.id,
           itemName: item.itemName,
-          quantity: item.quantity,
-          price: item.price,
-          total: item.total,
-          mrp: item.mrp,
-          unit: item.unit
+          mrp: parseFloat(item.mrp),
+          sellPrice: parseFloat(item.sellPrice || item.price),
+          price: parseFloat(item.price),
+          quantity: parseInt(item.quantity),
+          total: parseFloat(item.total),
+          unit: item.unit || 'PCS'
         })),
-        subtotal: subtotal,
-        grandTotal: grandTotal,
-        type: type,
-        date: new Date().toISOString(),
-        billNumber: `BILL-${Date.now()}`
+        subtotal: parseFloat(subtotal.toFixed(2)),
+        taxAmount: parseFloat(taxAmount.toFixed(2)),
+        discountAmount: parseFloat(discountAmount.toFixed(2)),
+        grandTotal: parseFloat(finalTotal.toFixed(2)),
+        type: type.toUpperCase(),
+        billDate: new Date().toISOString().slice(0, 19)
       };
 
       // First save the bill
@@ -261,7 +346,8 @@ const NewBill = () => {
       });
 
       if (!billResponse.ok) {
-        throw new Error('Failed to save bill');
+        const errorText = await billResponse.text();
+        throw new Error(`Failed to save bill: ${errorText}`);
       }
 
       // If bill is saved successfully, update stock
@@ -283,18 +369,71 @@ const NewBill = () => {
         throw new Error(`Failed to update stock: ${error}`);
       }
 
-      // Show success message and reset form
+      // Show success message
       setMessage(`${getDisplayText(translations.pages.newBill.billSaved, language)} - ${billData.billNumber}`);
       
+      // Generate thermal receipt if requested
+      if (shouldGenerateReceipt) {
+        console.log('Preparing receipt data...');
+        const receiptData = {
+          billNumber: billData.billNumber.split('-')[1], // Get just the number part after BILL-
+          cashierName: 'Cashier',
+          items: cart.map(item => ({
+            name: item.itemName,
+            quantity: item.quantity,
+            rate: item.price,
+            amount: item.total,
+            unit: item.unit || 'pcs'
+          })),
+          subtotal: subtotal,
+          discount: 0,
+          discountPercent: 0,
+          total: grandTotal,
+          paymentMethod: type === 'cash' ? 'Cash' : type === 'credit' ? 'Credit' : type,
+          amountPaid: grandTotal,
+          change: 0,
+          date: new Date().toLocaleString('en-IN', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: true
+          })
+        };
+        
+        console.log('Receipt data:', receiptData);
+        
+        try {
+          console.log('Generating receipt...');
+          generateReceipt(receiptData);
+          console.log('Receipt generation completed');
+        } catch (error) {
+          console.error('Error generating receipt:', error);
+        }
+      }
+      
+      // Only clear cart for cash payments
       if (type === 'cash') {
         clearCart();
       }
       
+      return true;
+      
     } catch (err) {
       console.error('Error saving bill:', err);
       setMessage('Error saving bill: ' + err.message);
+      return false;
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Handle save and print
+  const handleSaveAndPrint = async () => {
+    const success = await saveBill('cash', true);
+    if (!success) {
+      setMessage('Failed to save bill. Receipt not generated.');
     }
   };
 
@@ -357,36 +496,35 @@ const NewBill = () => {
             )}
           </div>
 
-          {/* Search Bar with Barcode Button */}
-          <div className="flex space-x-2 mb-4">
-            <div className="relative flex-1">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <Search className="h-5 w-5 text-gray-400" />
-              </div>
+          {/* Search and Barcode Section */}
+          <div className="search-container">
+            <div className="search-input-container">
+              <Search size={18} className="search-icon" />
               <input
                 type="text"
                 ref={searchInputRef}
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && searchProducts(searchTerm)}
-                className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                onKeyDown={(e) => e.key === 'Enter' && searchProducts(searchTerm)}
                 placeholder={getDisplayText(translations.pages.newBill.searchProduct, language)}
+                className="search-input"
               />
+              <button
+                type="button"
+                onClick={toggleBarcodeScanning}
+                className={`barcode-scan-btn ${isScanning ? 'scanning' : ''}`}
+                title={isScanning ? 'Stop Barcode Scan' : 'Start Barcode Scan'}
+              >
+                <Barcode size={18} />
+                {isScanning && <span className="scan-indicator"></span>}
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={toggleBarcodeScanning}
-              className={`inline-flex items-center px-3 py-2 border rounded-md shadow-sm text-sm font-medium ${isScanning ? 'bg-red-100 text-red-700 border-red-300' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'} focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500`}
-              title={isScanning ? getDisplayText(translations.pages.newBill.stopScanning, language) : getDisplayText(translations.pages.newBill.startScanning, language)}
-            >
-              <Barcode className="h-5 w-5" />
-            </button>
+            {isScanning && (
+              <div className="scan-mode-indicator">
+                <span className="blink">🔴</span> {getDisplayText(translations.pages.newBill.scanModeActive || 'Scan Mode Active', language)}
+              </div>
+            )}
           </div>
-          {isScanning && (
-            <div className="mb-4 p-2 bg-blue-50 text-blue-700 text-sm rounded-md">
-              {getDisplayText(translations.pages.newBill.scanningModeActive, language)}
-            </div>
-          )}
 
           {/* Search Results */}
           {searchResults.length > 0 && (
@@ -513,9 +651,9 @@ const NewBill = () => {
             {/* Action Buttons */}
             <div className="action-buttons">
               <button
-                onClick={() => saveBill('cash')}
+                onClick={handleSaveAndPrint}
                 className="btn btn-primary"
-                disabled={cart.length === 0}
+                disabled={cart.length === 0 || loading}
               >
                 <Printer size={16} />
                 {getDisplayText(translations.pages.newBill.saveAndPrint, language)}
@@ -524,7 +662,7 @@ const NewBill = () => {
               <button
                 onClick={() => saveBill('whatsapp')}
                 className="btn btn-success"
-                disabled={cart.length === 0}
+                disabled={cart.length === 0 || loading}
               >
                 <MessageCircle size={16} />
                 {getDisplayText(translations.pages.newBill.whatsapp, language)}
@@ -533,7 +671,7 @@ const NewBill = () => {
               <button
                 onClick={() => saveBill('credit')}
                 className="btn btn-warning"
-                disabled={cart.length === 0}
+                disabled={cart.length === 0 || loading}
               >
                 <CreditCard size={16} />
                 {getDisplayText(translations.pages.newBill.saveAsUdhaar, language)}
@@ -652,69 +790,93 @@ const NewBill = () => {
         }
 
         .search-container {
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
+          position: relative;
+          margin: 15px 0;
+          width: 100%;
         }
 
         .search-input-container {
           position: relative;
-          margin-bottom: 15px;
+          display: flex;
+          align-items: center;
+          width: 100%;
         }
 
-        .search-input-container svg {
+        .search-icon {
           position: absolute;
           left: 12px;
           top: 50%;
           transform: translateY(-50%);
           color: #6c757d;
+          z-index: 2;
         }
 
         .search-input {
           width: 100%;
-          padding: 12px 12px 12px 45px;
+          padding: 12px 50px 12px 45px;
           border: 2px solid #dee2e6;
           border-radius: 8px;
           font-size: 16px;
+          height: 48px;
+          transition: all 0.2s ease;
         }
 
         .search-input:focus {
           outline: none;
           border-color: #007bff;
+          box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
         }
 
-        .search-results {
-          max-height: 200px;
-          overflow-y: auto;
-          border: 1px solid #dee2e6;
-          border-radius: 6px;
-          background: white;
-        }
-
-        .search-result-item {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding: 12px;
-          border-bottom: 1px solid #f8f9fa;
-          cursor: pointer;
-        }
-
-        .search-result-item:hover {
+        .barcode-scan-btn {
+          position: absolute;
+          right: 8px;
+          top: 50%;
+          transform: translateY(-50%);
           background: #f8f9fa;
-        }
-
-        .item-name {
-          font-weight: bold;
-          font-size: 14px;
-        }
-
-        .item-details {
+          border: 2px solid #dee2e6;
+          border-radius: 6px;
+          padding: 8px;
+          cursor: pointer;
           display: flex;
-          flex-direction: column;
-          gap: 4px;
-          font-size: 12px;
-          color: #6c757d;
+          align-items: center;
+          justify-content: center;
+          z-index: 2;
+          transition: all 0.2s ease;
+        }
+
+        .barcode-scan-btn:hover {
+          background: #e9ecef;
+          border-color: #ced4da;
+        }
+
+        .barcode-scan-btn.scanning {
+          background: #dc3545;
+          border-color: #dc3545;
+          color: white;
+          animation: pulse 1.5s infinite;
+        }
+
+        .scan-indicator {
+          display: inline-block;
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background: white;
+          margin-left: 5px;
+          animation: blink 1s infinite;
+        }
+
+        .scan-mode-indicator {
+          margin-top: 8px;
+          padding: 8px 12px;
+          background: #dc3545;
+          color: white;
+          border-radius: 6px;
+          font-size: 14px;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          animation: fadeIn 0.3s ease;
         }
 
         .cart-section {
@@ -745,8 +907,8 @@ const NewBill = () => {
           color: white;
           border: none;
           border-radius: 4px;
-          font-size: 12px;
           cursor: pointer;
+          font-size: 12px;
         }
 
         .clear-cart-btn:hover {
@@ -1009,11 +1171,32 @@ const NewBill = () => {
           font-size: 14px;
         }
 
+        .error {
+          background: #f8d7da;
+          color: #721c24;
+        }
+
         .loading-text, .no-results {
           text-align: center;
           color: #6c757d;
           padding: 20px;
           font-style: italic;
+        }
+
+        @keyframes blink {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0; }
+        }
+
+        @keyframes pulse {
+          0% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.4); }
+          70% { box-shadow: 0 0 0 10px rgba(220, 53, 69, 0); }
+          100% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0); }
+        }
+
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(-5px); }
+          to { opacity: 1; transform: translateY(0); }
         }
 
         @media (max-width: 1024px) {

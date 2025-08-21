@@ -11,7 +11,7 @@
     "big.js": "^6.2.2",
     "date-fns": "^2.30.0",
     "i18next": "^21.10.0",
-    "jspdf": "^3.0.1",
+    "jspdf": "^2.5.1",
     "jspdf-autotable": "^5.0.2",
     "lodash": "^4.17.21",
     "lucide-react": "^0.539.0",

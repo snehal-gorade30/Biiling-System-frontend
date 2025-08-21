@@ -1,13 +1,12 @@
-  import React, { useState, useEffect, useCallback } from 'react';
+  import React, { useState, useEffect, useCallback, useRef } from 'react';
   import { useLanguage } from '../context/LanguageContext';
-  import { Printer, Plus, Trash2 } from 'lucide-react';
+  import { Printer, Plus, Trash2, Barcode, Search,Scan } from 'lucide-react';
   import axios from 'axios';
   import debounce from 'lodash/debounce';
-  import Big from 'big.js';
   import './InvoiceForm.css';
-  import { jsPDF } from 'jspdf';
+
   import 'jspdf-autotable';
-  import autoTable from 'jspdf-autotable';
+  import { generateReceipt } from '../utils/receiptGenerator';
 
   const API_BASE_URL = 'http://localhost:8080/api';
 
@@ -22,7 +21,17 @@
     const [searchTerms, setSearchTerms] = useState(['']);
     const [searchResults, setSearchResults] = useState([[]]);
     const [showSearchResults, setShowSearchResults] = useState([false]);
+    const [isScanning, setIsScanning] = useState(false);
+    const [scanningRow, setScanningRow] = useState(null);
+    const searchInputRefs = useRef([]);
     
+    const [barcodeBuffer, setBarcodeBuffer] = useState('');
+    const [isProcessingBarcode, setIsProcessingBarcode] = useState(false);
+    const [barcodeInput, setBarcodeInput] = useState('');
+    const [barcodeValue, setBarcodeValue] = useState('');
+
+
+
     // Initialize state arrays when items change
     useEffect(() => {
       if (items.length > searchTerms.length) {
@@ -45,6 +54,7 @@
     
     const [selectedItem, setSelectedItem] = useState(null);
     const [isSaving, setIsSaving] = useState(false);
+
     
     // Initialize form data with default values to prevent undefined
     const [formData, setFormData] = useState({
@@ -97,6 +107,9 @@
     useEffect(() => {
       return () => {
         debouncedSearch.cancel();
+        if (window.barcodeTimer) {
+          clearTimeout(window.barcodeTimer);
+        }
       };
     }, [debouncedSearch]);
 
@@ -134,21 +147,29 @@
       updatedSearchTerms[index] = item.itemName;
       setSearchTerms(updatedSearchTerms);
       
+      // Calculate amount and total with GST
+      const qty = 1;
+      const sellPrice = parseFloat(item.sellPrice) || 0;
+      const gstRate = parseFloat(item.gst) || 0;
+      const amount = (sellPrice * qty).toFixed(2);
+      const gstAmount = (amount * gstRate / 100).toFixed(2);
+      const total = (parseFloat(amount) + parseFloat(gstAmount)).toFixed(2);
+      
       // Update the current item in the items array
       const updatedItems = [...items];
-      
       updatedItems[index] = {
         ...updatedItems[index],
-        itemName: item.itemName,
-        mrp: item.mrp.toString(),
-        sellPrice: item.sellPrice.toString(),
-        qty: '1',
-        gst: item.gst ? item.gst.toString() : '0',
+        itemName: item.itemName || '',
+        mrp: (item.mrp || 0).toString(),
+        sellPrice: sellPrice.toString(),
+        qty: qty.toString(),
+        gst: gstRate.toString(),
         discount: '0',
-        itemId: item.id,
-        availableStock: item.currentStock,
-        amount: item.sellPrice.toString(),
-        total: item.sellPrice.toString()
+        itemId: item.id ? item.id.toString() : null,
+        availableStock: item.currentStock || 0,
+        unit: item.unit || 'PCS',
+        amount: amount,
+        total: total
       };
       
       setItems(updatedItems);
@@ -157,7 +178,11 @@
       const updatedShowResults = [...showSearchResults];
       updatedShowResults[index] = false;
       setShowSearchResults(updatedShowResults);
+      
+      // Recalculate totals
+      calculateTotals();
     };
+
 
     // Convert string values to numbers for calculations with better handling of edge cases
     const getNumericValue = (value) => {
@@ -184,55 +209,35 @@
     };
 
     // Calculate totals when items or form data changes
-    useEffect(() => {
-      const calculateTotals = () => {
-        const updatedItems = items.map(item => {
-          const qty = getNumericValue(item.qty);
-          const sellPrice = getNumericValue(item.sellPrice);
-          const discount = getNumericValue(item.discount);
-          const gst = getNumericValue(item.gst);
-          
-          const amount = (sellPrice * qty) - (discount * qty);
-          const gstAmount = (amount * gst) / 100;
-          const total = amount + gstAmount;
-          
-          return { 
-            ...item,
-            amount: amount.toFixed(2),
-            total: total.toFixed(2)
-          };
-        });
+    // 1. Memoize calculateTotals with useCallback
+    const calculateTotals = useCallback(() => {
+      // Calculate subtotal (sum of all item amounts)
+      const subTotal = items.reduce((sum, item) => {
+        return sum + parseFloat(item.amount || 0);
+      }, 0);
+    
+      // Calculate total GST (sum of all item totals - subtotal)
+      const totalGst = items.reduce((sum, item) => {
+        return sum + (parseFloat(item.total || 0) - parseFloat(item.amount || 0));
+      }, 0);
+    
+      // Calculate grand total (subtotal + GST - invoice discount)
+      const invoiceDiscount = parseFloat(formData.invoiceDiscount || 0);
+      const grandTotal = (subTotal + totalGst) * (1 - invoiceDiscount / 100);
+      
+      setFormData(prev => ({
+        ...prev,
+        subTotal: subTotal.toFixed(2),
+        totalGst: totalGst.toFixed(2),
+        grandTotal: grandTotal.toFixed(2),
+        balance: (parseFloat(prev.receivedAmount || 0) - grandTotal).toFixed(2)
+      }));
+    }, [items, formData.invoiceDiscount, formData.receivedAmount]);
 
-        const subTotal = updatedItems.reduce((sum, item) => 
-          sum + getNumericValue(item.amount), 0);
-        
-        const totalGst = updatedItems.reduce((sum, item) => 
-          sum + (getNumericValue(item.total) - getNumericValue(item.amount)), 0);
-        
-        const grandTotal = subTotal + totalGst;
-        
-        // Only update items if they've actually changed
-        if (JSON.stringify(updatedItems) !== JSON.stringify(items)) {
-          setItems(updatedItems);
-        }
-        
-        // Only update form data if values have actually changed
-        setFormData(prev => {
-          const newFormData = {
-            ...prev,
-            subTotal: subTotal.toFixed(2),
-            totalGst: totalGst.toFixed(2),
-            grandTotal: grandTotal.toFixed(2),
-            balance: (getNumericValue(prev.receivedAmount) - grandTotal).toFixed(2)
-          };
-          
-          // Only update if values have changed
-          return JSON.stringify(prev) !== JSON.stringify(newFormData) ? newFormData : prev;
-        });
-      };
-
-      calculateTotals();
-    }, [items, formData.receivedAmount]);
+// 2. Call calculateTotals in useEffect
+useEffect(() => {
+  calculateTotals();
+}, [calculateTotals]);
 
     // Close search results when clicking outside
     useEffect(() => {
@@ -282,6 +287,22 @@
       } else {
         newItems[index][field] = value;
       }
+    
+      // Calculate amount and total when relevant fields change
+      if (['qty', 'sellPrice', 'discount', 'gst'].includes(field)) {
+        const qty = parseFloat(newItems[index].qty || 0);
+        const sellPrice = parseFloat(newItems[index].sellPrice || 0);
+        const discount = parseFloat(newItems[index].discount || 0);
+        const gst = parseFloat(newItems[index].gst || 0);
+    
+        // Calculate amount (price after discount)
+        const amount = (sellPrice * qty) * (1 - discount / 100);
+        newItems[index].amount = amount.toFixed(2);
+    
+        // Calculate total (amount + GST)
+        const total = amount * (1 + gst / 100);
+        newItems[index].total = total.toFixed(2);
+      }
       
       // Validate stock quantity
       if (field === 'qty') {
@@ -294,6 +315,7 @@
       
       setItems(newItems);
     };
+    
 
     // Update handleInputChange to properly handle numeric fields and empty values
     const handleInputChange = (field, value) => {
@@ -315,90 +337,247 @@
       }
     };
 
+    const toggleBarcodeScanning = (index) => {
+      if (isScanning && scanningRow === index) {
+        setIsScanning(false);
+        setScanningRow(null);
+      } else {
+        setIsScanning(true);
+        setScanningRow(index);
+        // Focus the input when starting to scan
+        setTimeout(() => {
+          const input = searchInputRefs.current[index];
+          if (input) {
+            input.focus();
+            input.select();
+          }
+        }, 100);
+      }
+    };
+    
+    const handleBarcodeScan = async (barcode, index) => {
+      if (!barcode || !isScanning || scanningRow !== index) return;
+      
+      console.log('Processing barcode:', barcode);
+      setIsProcessingBarcode(true);
+      
+      try {
+        const cleanBarcode = barcode.trim();
+        const response = await axios.get(`http://localhost:8080/api/items/barcode/${encodeURIComponent(cleanBarcode)}`);
+        
+        if (response.data) {
+          const item = response.data;
+          setItems(prevItems => {
+            const newItems = [...prevItems];
+            newItems[index] = {
+              ...(newItems[index] || {}),
+              id: index + 1,
+              itemId: item.id,
+              itemName: item.itemName || item.name,
+              name: item.itemName || item.name,
+              hsn: item.hsn || '',
+              mrp: item.mrp,
+              sellPrice: item.sellPrice,
+              price: item.sellPrice,
+              gst: item.gst || '',
+              amount: item.sellPrice,
+              total: (item.sellPrice * 1).toFixed(2),
+              availableStock: item.currentStock || 0,
+              unit: item.unit || 'PCS',
+              quantity: 1
+            };
+            return newItems;
+          });
+    
+          // Update search terms to show the item name
+          const updatedSearchTerms = [...searchTerms];
+          updatedSearchTerms[index] = item.itemName || item.name;
+          setSearchTerms(updatedSearchTerms);
+        }
+      } catch (error) {
+        console.error('Error scanning barcode:', error);
+        if (error.response?.status === 404) {
+          alert(`No item found with barcode: ${barcode}`);
+        }
+      } finally {
+        setIsProcessingBarcode(false);
+        setIsScanning(false);
+        setScanningRow(null);
+        setBarcodeValue('');
+      }
+    };
+    
+    const searchByBarcode = async (barcode, index) => {
+      try {
+        console.log('Searching for barcode:', barcode);
+        const response = await axios.get(`http://localhost:8080/api/items/barcode/${encodeURIComponent(barcode)}`);
+        
+        if (response.data) {
+          console.log('Item found:', response.data);
+          handleItemSelect(response.data, index);
+        } else {
+          console.log('No item found for barcode:', barcode);
+          // Clear the search term for this row
+          const updatedSearchTerms = [...searchTerms];
+          updatedSearchTerms[index] = '';
+          setSearchTerms(updatedSearchTerms);
+          
+          // Show error message
+          alert('No item found with this barcode');
+        }
+      } catch (error) {
+        console.error('Error searching by barcode:', error);
+        
+        // Clear the search term for this row
+        const updatedSearchTerms = [...searchTerms];
+        updatedSearchTerms[index] = '';
+        setSearchTerms(updatedSearchTerms);
+        
+        // Check if it's a 404 error (item not found)
+        if (error.response && error.response.status === 404) {
+          console.log('No item found for barcode (404)');
+          alert('No item found with this barcode');
+        } else {
+          console.error('Error details:', error.response || error.message);
+          alert('Error searching for barcode. Please try again.');
+        }
+      } finally {
+        // Always turn off scanning mode after search
+        setIsScanning(false);
+        setScanningRow(null);
+      }
+    };
+
+    const validateForm = () => {
+      if (isProcessingBarcode) {
+        return false; // Prevent form submission during barcode processing
+      }
+    
+      if (items.length === 0) {
+        alert('Please add at least one item');
+        return false;
+      }
+    
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (!item?.itemName || !item.quantity || !item.price) {
+          return false;
+        }
+      }
+      return true;
+    };
+
+    const resetForm = () => {
+      setItems([{ 
+        id: 1, 
+        itemId: '', 
+        itemName: '', 
+        hsn: '', 
+        qty: '1', 
+        mrp: '', 
+        sellPrice: '', 
+        discount: '0', 
+        gst: '0', 
+        amount: '0', 
+        total: '0', 
+        availableStock: 0 
+      }]);
+      
+      setFormData(prev => ({
+        ...prev,
+        customerName: '',
+        mobile: '',
+        address: '',
+        paymentMode: 'cash',
+        receivedAmount: '',
+        balance: '0.00',
+        invoiceDiscount: '0',
+        subTotal: '0.00',
+        totalGst: '0.00',
+        grandTotal: '0.00'
+      }));
+      
+      setSearchTerms(['']);
+    };
+    
+    
     const handleSave = async (shouldPrint = false) => {
       try {
+        console.log('Starting save and print process...');
         setIsSaving(true);
         
-        // Validate required fields
-        if (!formData.customerName) {
-          alert('Customer name is required');
-          return false;
-        }
-    
-        // Validate items
-        if (items.length === 0) {
-          alert('Please add at least one item to the invoice');
-          return false;
-        }
-    
-        // Validate payment
-        const grandTotal = parseFloat(formData.grandTotal) || 0;
-        const receivedAmount = parseFloat(formData.receivedAmount) || 0;
+        // Generate a bill number
+        const billNumber = `INV-${Date.now().toString().slice(-6)}`;
         
-        if (formData.paymentMode === 'cash' && receivedAmount < grandTotal) {
-          if (!window.confirm('Received amount is less than grand total. Are you sure you want to continue?')) {
-            return false;
-          }
-        }
-
-        // Generate a unique bill number using timestamp and random number
-        const generateUniqueBillNumber = () => {
-          const timestamp = Date.now();
-          const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
-          return `INV-${timestamp}-${random}`;
+        const billData = {
+          // Required fields from error
+          billNumber: billNumber,
+          type: 'SALE', // Assuming this is a sale invoice
+          billDate: new Date().toISOString(),
+          subtotal: parseFloat(formData.subTotal || 0),
+          taxAmount: parseFloat(formData.totalGst || 0),
+          discountAmount: parseFloat(formData.invoiceDiscount || 0),
+          
+          // Existing fields
+          customerName: formData.customerName || 'Walk-in Customer',
+          customerPhone: formData.mobile || '',
+          paymentMode: formData.paymentMode || 'cash',
+          subTotal: parseFloat(formData.subTotal || 0),
+          totalGst: parseFloat(formData.totalGst || 0),
+          grandTotal: parseFloat(formData.grandTotal || 0),
+          receivedAmount: parseFloat(formData.receivedAmount || 0),
+          balance: parseFloat(formData.balance || 0),
+          items: items.map(item => ({
+            itemId: item.itemId,
+            itemName: item.itemName,
+            mrp: parseFloat(item.mrp || 0),
+            sellPrice: parseFloat(item.sellPrice || 0),
+            price: parseFloat(item.sellPrice || 0), // Added price field
+            quantity: parseFloat(item.qty || 0),
+            gst: parseFloat(item.gst || 0),
+            discount: parseFloat(item.discount || 0),
+            amount: parseFloat(item.amount || 0),
+            total: parseFloat(item.total || 0),
+            unit: item.unit || 'PCS'
+          }))
         };
     
-        // Prepare bill data
-        const billData = {
-            billNumber: formData.invoiceNo || generateUniqueBillNumber(),
-            customerName: formData.customerName || '',
-            phoneNumber: formData.mobile || '',
-            address: formData.address || '',
-            type: formData.paymentMode === 'credit' ? 'CREDIT' : 'CASH',
-            date: new Date().toISOString(),
-            subtotal: (formData.subTotal || 0).toString(),
-            grandTotal: (grandTotal || 0).toString(),
-            items: items.map(item => ({
-              itemId: item.itemId ? parseInt(item.itemId) : null,
-              itemName: item.itemName || '',
-              mrp: (item.mrp || 0).toString(),
-              sellPrice: (item.sellPrice || 0).toString(),
-              price: (item.sellPrice || 0).toString(),
-              quantity: parseInt(item.qty) || 1,
-              total: (item.amount || 0).toString(),
-              unit: item.unit || 'PCS'
-            }))
-          };
+        console.log('Saving bill data:', JSON.stringify(billData, null, 2));
         
-        console.log('Sending bill data to server:', JSON.stringify(billData, null, 2));
-        
-        const response = await axios.post(`${API_BASE_URL}/bills`, billData, {
+        // Make API call to save the bill
+        const response = await axios.post('http://localhost:8080/api/bills', billData, {
           headers: {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
           }
         });
+    
+        console.log('Save successful:', response.data);
         
-        console.log('Server response:', response.data);
-        
-        if (response.data && response.data.id) {
-          alert('Bill saved successfully!');
-          return shouldPrint ? response.data : true;
+        if (shouldPrint) {
+          await handlePrint(response.data);
         } else {
-          console.error('Unexpected response format:', response.data);
-          alert('Failed to save bill: Unexpected response from server');
-          return false;
+          alert('Bill saved successfully!');
         }
+    
+        resetForm();
+        return response.data;
+        
       } catch (error) {
         console.error('Error saving bill:', {
           error: error.message,
           response: error.response?.data,
-          status: error.response?.status
+          status: error.response?.status,
+          config: {
+            url: error.config?.url,
+            data: error.config?.data,
+            headers: error.config?.headers
+          }
         });
-        const errorMessage = error.response?.data?.message || 
-                            error.message || 
-                            'Failed to save bill. Please check console for details.';
+        
+        const errorMessage = error.response?.data?.message || error.message || 'Failed to save bill. Please try again.';
         alert(`Error: ${errorMessage}`);
-        return false;
+        return null;
       } finally {
         setIsSaving(false);
       }
@@ -428,185 +607,39 @@
         const billData = savedBill || formData;
         const itemsToPrint = savedBill?.items || items;
         
-        // Initialize jsPDF with proper configuration
-        const doc = new jsPDF({
-          orientation: 'portrait',
-          unit: 'mm',
-          format: 'a4'
-        });
-        
-        // Set initial font
-        doc.setFont('helvetica');
-        doc.setFontSize(10);
-        
-        const pageWidth = doc.internal.pageSize.getWidth();
-        const margin = 15;
-        let yPos = 20;
+        // Format data for receipt generator
+        const receiptData = {
+          billNumber: billData.billNumber || `INV-${Date.now()}`,
+          date: new Date().toLocaleString('en-IN', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: true
+          }),
+          cashierName: billData.cashierName || 'Cashier',
+          items: itemsToPrint.map(item => ({
+            name: item.itemName || 'Item',
+            quantity: item.qty || 1,
+            rate: item.sellPrice || 0,
+            amount: item.total || 0
+          })),
+          subtotal: billData.subtotal || 0,
+          discount: billData.discountAmount || 0,
+          discountPercent: billData.discountPercent || 0,
+          total: billData.grandTotal || 0,
+          paymentMethod: billData.paymentMethod || 'Cash',
+          amountPaid: billData.amountPaid || 0,
+          change: billData.change || 0
+        };
     
-        // Shop Header
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(20);
-        doc.text('Your Shop Name', pageWidth / 2, yPos, { align: 'center' });
-        yPos += 10;
-    
-        // Shop Details
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(10);
-        doc.text('Shop Address Line 1', pageWidth / 2, yPos, { align: 'center' });
-        yPos += 5;
-        doc.text('City, State - Pincode', pageWidth / 2, yPos, { align: 'center' });
-        yPos += 5;
-        doc.text('GSTIN: 12ABCDE3456F7Z8 | Phone: +91 9876543210', pageWidth / 2, yPos, { align: 'center' });
-        yPos += 10;
-    
-        // Invoice Title
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(16);
-        doc.text('TAX INVOICE', pageWidth / 2, yPos, { align: 'center' });
-        yPos += 15;
-    
-        // Invoice Details
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(10);
-        doc.text(`Invoice #: ${billData.invoiceNo || 'N/A'}`, margin, yPos);
-        doc.text(`Date: ${new Date(billData.date).toLocaleDateString('en-IN')}`, pageWidth - margin, yPos, { align: 'right' });
-        yPos += 10;
-    
-        // Customer Details
-        doc.setFont('helvetica', 'bold');
-        doc.text('Bill To:', margin, yPos);
-        doc.setFont('helvetica', 'normal');
-        yPos += 5;
-        doc.text(`Name: ${billData.customerName || 'Walk-in Customer'}`, margin + 10, yPos);
-        yPos += 5;
-        doc.text(`Phone: ${billData.mobile || 'N/A'}`, margin + 10, yPos);
-        yPos += 5;
-        doc.text(`Address: ${billData.address || 'N/A'}`, margin + 10, yPos);
-        yPos += 10;
-    
-        // Items Table
-        const tableColumn = [
-          'Sr',
-          'Item Name',
-          'HSN',
-          'Qty',
-          'Rate (₹)',
-          'GST %',
-          'Amount (₹)'
-        ];
-        
-        const tableRows = itemsToPrint.map((item, index) => [
-          index + 1,
-          item.itemName || 'N/A',
-          item.hsn || 'N/A',
-          item.qty || 0,
-          parseFloat(item.sellPrice || 0).toFixed(2),
-          item.gst ? `${item.gst}%` : '0%',
-          parseFloat(item.amount || 0).toFixed(2)
-        ]);
-    
-        // Add table to PDF
-        autoTable(doc, {
-          head: [tableColumn],
-          body: tableRows,
-          startY: yPos,
-          margin: { left: margin, right: margin },
-          headStyles: {
-            fillColor: [41, 128, 185],
-            textColor: 255,
-            fontStyle: 'bold',
-            fontSize: 9
-          },
-          bodyStyles: {
-            fontSize: 8,
-            cellPadding: 2
-          },
-          columnStyles: {
-            0: { cellWidth: 10 }, // Sr No
-            1: { cellWidth: 50 }, // Item Name
-            2: { cellWidth: 20 }, // HSN
-            3: { cellWidth: 15 }, // Qty
-            4: { cellWidth: 25 }, // Rate
-            5: { cellWidth: 20 }, // GST %
-            6: { cellWidth: 25 }  // Amount
-          },
-          didDrawPage: function(data) {
-            // Footer
-            doc.setFontSize(8);
-            doc.text('Thank you for your business!', pageWidth / 2, doc.internal.pageSize.height - 20, { align: 'center' });
-            doc.text('For any queries, please contact: +91 9876543210', pageWidth / 2, doc.internal.pageSize.height - 15, { align: 'center' });
-          }
-        });
-    
-        // Calculate totals
-        const subtotal = itemsToPrint.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
-        const totalGst = itemsToPrint.reduce((sum, item) => {
-          if (item.gst && item.amount) {
-            const gstPercentage = parseFloat(item.gst) || 0;
-            const itemAmount = parseFloat(item.amount) || 0;
-            return sum + (itemAmount * gstPercentage / 100);
-          }
-          return sum;
-        }, 0);
-        
-        const discount = parseFloat(billData.invoiceDiscount) || 0;
-        const grandTotal = subtotal + totalGst - discount;
-        const receivedAmount = parseFloat(billData.receivedAmount) || 0;
-        const balance = receivedAmount - grandTotal;
-    
-        // Add totals section
-        const finalY = doc.lastAutoTable.finalY + 10;
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(10);
-        doc.text('Sub Total:', pageWidth - 60, finalY);
-        doc.text(`₹${subtotal.toFixed(2)}`, pageWidth - margin, finalY, { align: 'right' });
-        
-        doc.text('GST:', pageWidth - 60, finalY + 5);
-        doc.text(`₹${totalGst.toFixed(2)}`, pageWidth - margin, finalY + 5, { align: 'right' });
-        
-        if (discount > 0) {
-          doc.text('Discount:', pageWidth - 60, finalY + 10);
-          doc.text(`-₹${discount.toFixed(2)}`, pageWidth - margin, finalY + 10, { align: 'right' });
-        }
-        
-        doc.setFontSize(12);
-        doc.text('Grand Total:', pageWidth - 60, finalY + 20);
-        doc.text(`₹${grandTotal.toFixed(2)}`, pageWidth - margin, finalY + 20, { align: 'right' });
-        
-        // Payment Information
-        doc.setFontSize(10);
-        doc.setFont('helvetica', 'normal');
-        doc.text('Payment Mode:', margin, finalY + 30);
-        doc.text(billData.paymentMode ? billData.paymentMode.charAt(0).toUpperCase() + billData.paymentMode.slice(1) : 'Cash', 
-                 margin + 30, finalY + 30);
-        
-        if (receivedAmount > 0) {
-          doc.text('Amount Received:', pageWidth - 100, finalY + 30);
-          doc.text(`₹${receivedAmount.toFixed(2)}`, pageWidth - margin, finalY + 30, { align: 'right' });
-          
-          if (balance > 0) {
-            doc.text('Change:', pageWidth - 100, finalY + 35);
-            doc.text(`₹${balance.toFixed(2)}`, pageWidth - margin, finalY + 35, { align: 'right' });
-          }
-        }
-    
-        // Add notes if available
-        if (billData.notes) {
-          doc.text('Notes:', margin, finalY + 45);
-          doc.text(billData.notes, margin + 15, finalY + 50, { maxWidth: pageWidth - (2 * margin) });
-        }
-    
-        // Save the PDF
-        doc.save(`invoice_${billData.invoiceNo || 'temp'}.pdf`);
+        // Use the receipt generator
+        generateReceipt(receiptData);
         
       } catch (error) {
-        console.error('Error in handlePrint:', {
-          error: error.message,
-          stack: error.stack,
-          formData: JSON.stringify(formData, null, 2),
-          items: JSON.stringify(items, null, 2)
-        });
-        alert('Failed to generate PDF. Please check console for details.');
+        console.error('Error generating receipt:', error);
+        alert('Failed to generate receipt. Please try again.');
       }
     };
    
@@ -701,78 +734,155 @@
                   {items.map((item, index) => (
                     <tr key={item.id}>
                       <td>
-                        <div className="search-container">
+                      <div className="search-container" style={{ position: 'relative' }}>
+    <div className="search-input-container">
+      <Search size={16} style={{
+        position: 'absolute',
+        left: '12px',
+        top: '50%',
+        transform: 'translateY(-50%)',
+        color: '#6c757d',
+        pointerEvents: 'none'
+      }} />
+      <input
+        type="text"
+        ref={el => searchInputRefs.current[index] = el}
+        value={items[index]?.itemName || (isScanning && scanningRow === index ? barcodeValue : searchTerms[index] || '')}
+        onChange={(e) => {
+          const value = e.target.value;
+          setBarcodeValue(value);
+          
+          if (isScanning && scanningRow === index) {
+            if (value.length >= 8) {
+              const barcode = value.trim();
+              handleBarcodeScan(barcode, index);
+            }
+          } else {
+            handleSearchChange(e, index);
+          }
+        }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && isScanning && scanningRow === index) {
+          e.preventDefault();
+          const barcode = barcodeValue.trim();
+          if (barcode.length >= 6) {
+            handleBarcodeScan(barcode, index);
+          }
+        }
+      }}
+      onFocus={() => {
+        const updatedShowResults = [...showSearchResults];
+        updatedShowResults[index] = true;
+        setShowSearchResults(updatedShowResults);
+      }}
+      onBlur={() => {
+        setTimeout(() => {
+          const updatedShowResults = [...showSearchResults];
+          updatedShowResults[index] = false;
+          setShowSearchResults(updatedShowResults);
+        }, 200);
+      }}
+      placeholder={isScanning && scanningRow === index ? 'Scan barcode...' : 'Type to search items...'}
+      className="form-control search-input"
+      style={{
+        paddingLeft: '40px',
+        paddingRight: '40px',
+        height: '40px',
+        border: isScanning && scanningRow === index ? '2px solid #dc3545' : '1px solid #ced4da',
+        boxShadow: isScanning && scanningRow === index ? '0 0 0 0.2rem rgba(220, 53, 69, 0.25)' : 'none'
+      }}
+    />
+      <button
+        type="button"
+        onClick={() => toggleBarcodeScanning(index)}
+        style={{
+          position: 'absolute',
+          right: '8px',
+          top: '50%',
+          transform: 'translateY(-50%)',
+          background: isScanning && scanningRow === index ? '#dc3545' : 'transparent',
+          border: 'none',
+          cursor: 'pointer',
+          padding: '4px',
+          borderRadius: '4px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: isScanning && scanningRow === index ? 'white' : '#6c757d',
+          transition: 'all 0.2s ease'
+        }}
+        title={isScanning && scanningRow === index ? 'Stop Scanning' : 'Scan Barcode'}
+      >
+        <Barcode size={18} />
+      </button>
+    </div>
+    {isScanning && scanningRow === index && (
+      <div style={{
+        position: 'absolute',
+        top: '100%',
+        left: 0,
+        right: 0,
+        background: '#dc3545',
+        color: 'white',
+        padding: '4px 8px',
+        fontSize: '12px',
+        borderRadius: '0 0 4px 4px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '4px'
+      }}>
+        <Scan size={12} />
+        <span>Scanning mode active - scan a barcode</span>
+      </div>
+    )}
+    {showSearchResults[index] && searchResults[index]?.length > 0 && (
+      <ul className="search-results">
+        {searchResults[index].map((result) => (
+          <li 
+            key={result.id}
+            className="search-result-item"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              handleItemSelect(result, index);
+            }}
+          >
+            {result.itemName} ({result.barcode || 'No barcode'})
+          </li>
+        ))}
+      </ul>
+    )}
+    </div>
+                        </td>
+                        <td>
                           <input
                             type="text"
-                            value={searchTerms[index] || ''}
-                            onChange={(e) => handleSearchChange(e, index)}
-                            onFocus={() => {
-                              const updatedShowResults = [...showSearchResults];
-                              updatedShowResults[index] = true;
-                              setShowSearchResults(updatedShowResults);
-                            }}
-                            onBlur={() => {
-                              // Small delay to allow click events to fire before hiding results
-                              setTimeout(() => {
-                                const updatedShowResults = [...showSearchResults];
-                                updatedShowResults[index] = false;
-                                setShowSearchResults(updatedShowResults);
-                              }, 200);
-                            }}
-                            placeholder="Type to search items..."
-                            className="form-control"
+                            value={item.hsn}
+                            onChange={(e) => handleItemChange(index, 'hsn', e.target.value)}
                           />
-                          {showSearchResults[index] && searchResults[index]?.length > 0 && (
-                            <ul className="search-results">
-                              {searchResults[index].map((result) => (
-                                <li 
-                                  key={result.id}
-                                  className="search-result-item"
-                                  onMouseDown={(e) => {
-                                    e.preventDefault(); // Prevent input blur before click
-                                    handleItemSelect(result, index);
-                                  }}
-                                >
-                                  {result.itemName}
-                                  <span className="item-details">
-                                    MRP: ₹{result.mrp} | SP: ₹{result.sellPrice} | Stock: {result.currentStock}
-                                  </span>
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                        </div>
-                      </td>
-                      <td>
-                        <input
-                          type="text"
-                          value={item.hsn}
-                          onChange={(e) => handleItemChange(index, 'hsn', e.target.value)}
-                        />
-                      </td>
-                      <td>
-                        <div className="quantity-control">
-                          <button 
-                            type="button" 
-                            className="btn btn-sm btn-outline-secondary"
-                            onClick={() => {
-                              const newItems = [...items];
-                              const currentQty = parseFloat(newItems[index].qty) || 0;
-                              newItems[index].qty = (currentQty - 1 > 0 ? currentQty - 1 : 1).toString();
-                              setItems(newItems);
-                            }}
-                            disabled={!item.itemId}
-                          >
-                            -
-                          </button>
-                          <input
-                            type="number"
-                            min="1"
-                            max={item.availableStock || 1}
-                            value={item.qty}
-                            onChange={(e) => {
-                              const value = e.target.value;
-                              const availableStock = parseFloat(item.availableStock) || 0;
+                        </td>
+                        <td>
+                          <div className="quantity-control">
+                            <button 
+                              type="button" 
+                              className="btn btn-sm btn-outline-secondary"
+                              onClick={() => {
+                                const newItems = [...items];
+                                const currentQty = parseFloat(newItems[index].qty) || 0;
+                                newItems[index].qty = (currentQty - 1 > 0 ? currentQty - 1 : 1).toString();
+                                setItems(newItems);
+                              }}
+                              disabled={!item.itemId}
+                            >
+                              -
+                            </button>
+                            <input
+                              type="number"
+                              min="1"
+                              max={item.availableStock || 1}
+                              value={item.qty}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                const availableStock = parseFloat(item.availableStock) || 0;
                               let newQty = value === '' ? '1' : Math.max(1, parseInt(value) || 1);
                               
                               if (newQty > availableStock) {

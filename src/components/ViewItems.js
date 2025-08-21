@@ -38,16 +38,25 @@ const ViewItems = () => {
 
   const updateStock = async (itemId, newStock) => {
     try {
+      const token = localStorage.getItem('token');
+      console.log('Updating stock for item:', itemId, 'New stock:', newStock);
+      
       const response = await fetch(`http://localhost:8080/api/items/${itemId}/stock`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
         },
-        body: JSON.stringify({ currentStock: newStock }),
+        body: JSON.stringify({ 
+          currentStock: parseInt(newStock)  // Ensure it's a number
+        }),
       });
 
+      const responseData = await response.json().catch(() => ({}));
+      console.log('Update stock response:', response.status, responseData);
+
       if (!response.ok) {
-        throw new Error('Failed to update stock');
+        throw new Error(responseData.message || 'Failed to update stock');
       }
 
       // Update local state
@@ -58,8 +67,12 @@ const ViewItems = () => {
       setSuccessMessage(t('pages.viewItems.stockUpdated'));
       setTimeout(() => setSuccessMessage(''), 3000);
     } catch (err) {
-      setError('Error updating stock: ' + err.message);
-      console.error('Error updating stock:', err);
+      console.error('Error in updateStock:', { 
+        error: err, 
+        message: err.message,
+        stack: err.stack 
+      });
+      setError('Error updating stock: ' + (err.message || 'Unknown error'));
     }
   };
 
@@ -150,14 +163,14 @@ const ViewItems = () => {
     return (
       <div className="view-items-container">
         <div className="header-section">
-          <h2>{t('viewAndManageItems')}</h2>
-          <p>{t('viewAndManageItemsDesc')}</p>
+          <h2>{t('pages.viewItems.title')}</h2>
+          <p>{t('pages.viewItems.description')}</p>
         </div>
         <div className="error-container">
           <span style={{ color: 'red' }}>{error}</span>
           <button onClick={fetchItems} className="btn btn-primary">
             Retry
-          </button>
+            </button>
         </div>
       </div>
     );
