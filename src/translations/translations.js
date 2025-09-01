@@ -10,7 +10,7 @@ export const translations = {
       master: "Master",
       inventory: "Inventory",
       addItems: "Add Items",
-      viewItems: "View Items",
+      viewItems: "View And Manage Items",
       sale: "Sale",
       newInvoice: "New Invoice",
       manageInvoices: "Search and Manage Invoices"
@@ -31,6 +31,7 @@ export const translations = {
         insufficientStock: "Insufficient stock available",
         outOfStock: "Item is out of stock",
         customerName: "Customer Name",
+        customerId: "Customer ID",
         phoneNumber: "Phone Number",
         address: "Address",
         mrp: "MRP",
@@ -103,9 +104,25 @@ export const translations = {
         }
       },
       creditBill: {
-        title: "Credit Bill",
-        description: "Manage credit bills and customer accounts",
-        comingSoon: "This feature will be implemented in the next phase"
+        title: "Credit Bills",
+        description: "Manage customer credit bills and payments",
+        searchPlaceholder: "Search by customer name, phone or bill number",
+        billNumber: "Bill #",
+        customerName: "Customer Name",
+        phoneNumber: "Phone",
+        totalAmount: "Total Amount",
+        paidAmount: "Paid Amount",
+        pendingAmount: "Pending Amount",
+        billDate: "Bill Date",
+        dueDate: "Due Date",
+        status: "Status",
+        actions: "Actions",
+        recordPayment: "Record Payment",
+        amount: "Amount",
+        paymentDate: "Payment Date",
+        paymentMethod: "Payment Method",
+        save: "Save",
+        cancel: "Cancel"
       },
       addItems: {
         title: "Add Items",
@@ -185,6 +202,7 @@ export const translations = {
         date: 'Date',
         customerDetails: 'Customer Details',
         customerName: 'Customer Name',
+        customerId: 'Customer ID',
         mobile: 'Mobile Number',
         address: 'Address',
         items: 'Items',
@@ -282,6 +300,16 @@ export const translations = {
       confirm: "Confirm",
       yes: "Yes",
       no: "No"
+    },
+    status: {
+      paid: "Paid",
+      pending: "Pending"
+    },
+    paymentMethods: {
+      cash: "Cash",
+      card: "Card",
+      upi: "UPI",
+      bankTransfer: "Bank Transfer"
     }
   },
   mr: {
@@ -295,7 +323,7 @@ export const translations = {
       master: "मास्टर",
       inventory: "इन्व्हेंटरी",
       addItems: "वस्तू जोडा",
-      viewItems: "वस्तू पहा",
+      viewItems: "वस्तू आणि व्यवस्थापित करा",
       sale: "विक्री",
       newInvoice: "नवीन चलन",
       manageInvoices: "चलने शोधा आणि व्यवस्थापित करा"
@@ -316,6 +344,7 @@ export const translations = {
         insufficientStock: "पुरेशी स्टॉक उपलब्ध नाही",
         outOfStock: "आयटम स्टॉक संपला आहे",
         customerName: "ग्राहकाचे नाव",
+        customerId: "ग्राहक आयडी",
         phoneNumber: "फोन नंबर",
         address: "पत्ता",
         mrp: "एमआरपी",
@@ -388,9 +417,25 @@ export const translations = {
         }
       },
       creditBill: {
-        title: "उधार बिल",
-        description: "उधार बिल आणि ग्राहक खाते व्यवस्थापित करा",
-        comingSoon: "हे वैशिष्ट्य पुढील टप्प्यात लागू केले जाईल"
+        title: "उधार बिले",
+        description: "ग्राहक उधार बिले आणि देयके व्यवस्थापित करा",
+        searchPlaceholder: "ग्राहकाचे नाव, फोन किंवा बिल क्रमांकाने शोधा",
+        billNumber: "बिल क्र.",
+        customerName: "ग्राहकाचे नाव",
+        phoneNumber: "फोन",
+        totalAmount: "एकूण रक्कम",
+        paidAmount: "भरलेली रक्कम",
+        pendingAmount: "बाकी रक्कम",
+        billDate: "बिलाची तारीख",
+        dueDate: "देय तारीख",
+        status: "स्थिती",
+        actions: "कृती",
+        recordPayment: "पेमेंट नोंदवा",
+        amount: "रक्कम",
+        paymentDate: "पेमेंट तारीख",
+        paymentMethod: "पेमेंट पद्धत",
+        save: "जतन करा",
+        cancel: "रद्द करा"
       },
       addItems: {
         title: "वस्तू जोडा",
@@ -470,6 +515,7 @@ export const translations = {
         date: 'Date',
         customerDetails: 'Customer Details',
         customerName: 'Customer Name',
+        customerId: 'Customer ID',
         mobile: 'Mobile Number',
         address: 'Address',
         items: 'Items',
@@ -567,6 +613,16 @@ export const translations = {
       confirm: "Confirm",
       yes: "Yes",
       no: "No"
+    },
+    status: {
+      paid: "पेड",
+      pending: "प्रलंबित"
+    },
+    paymentMethods: {
+      cash: "रोख",
+      card: "कार्ड",
+      upi: "यूपीआय",
+      bankTransfer: "बँक हस्तांतरण"
     }
   }
 };

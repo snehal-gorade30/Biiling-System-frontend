@@ -13,12 +13,15 @@ const NewBill = () => {
   const [searchResults, setSearchResults] = useState([]);
   const [cart, setCart] = useState([]);
   const [customerName, setCustomerName] = useState('');
+  const [customerId, setCustomerId] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [address, setAddress] = useState('');
   const [showCustomerInput, setShowCustomerInput] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [isScanning, setIsScanning] = useState(false);
+  const [paidAmount, setPaidAmount] = useState(0);
+  const [paymentMethod, setPaymentMethod] = useState('CASH');
   const searchInputRef = useRef(null);
   let barcodeBuffer = '';
   let barcodeTimeout = null;
@@ -288,6 +291,7 @@ const NewBill = () => {
   const clearCart = () => {
     setCart([]);
     setCustomerName('');
+    setCustomerId('');
     setPhoneNumber('');
     setAddress('');
     setShowCustomerInput(false);
@@ -312,11 +316,15 @@ const NewBill = () => {
       const discountAmount = 0;
       const finalTotal = subtotal + taxAmount - discountAmount;
       
+      // For credit bills, if paid amount is not set, default to 0
+      const amountPaid = type === 'credit' ? (paidAmount || 0) : finalTotal;
+      
       // Prepare the bill data in the format expected by backend
       const billData = {
-        billNumber: `BILL-${Date.now()}`,
+        billNumber: `INV-${Math.floor(100000 + Math.random() * 900000)}`,
         customerName: customerName || 'Walk-in Customer',
-        phoneNumber: phoneNumber || '',
+        customerId: customerId || null, 
+        phoneNumber: phoneNumber || '',  
         address: address || '',
         items: cart.map(item => ({
           itemId: item.id,
@@ -332,8 +340,14 @@ const NewBill = () => {
         taxAmount: parseFloat(taxAmount.toFixed(2)),
         discountAmount: parseFloat(discountAmount.toFixed(2)),
         grandTotal: parseFloat(finalTotal.toFixed(2)),
+        paidAmount: parseFloat(amountPaid.toFixed(2)),
         type: type.toUpperCase(),
-        billDate: new Date().toISOString().slice(0, 19)
+        billDate: new Date().toISOString().slice(0, 19),
+        payments: [{
+          amount: parseFloat(amountPaid.toFixed(2)),
+          paymentMethod: paymentMethod,
+          paymentDate: new Date().toISOString().slice(0, 19)
+        }]
       };
 
       // First save the bill
@@ -467,6 +481,13 @@ const NewBill = () => {
             ) : (
               <div className="customer-input">
                 <div className="customer-fields">
+                  <input
+                    type="text"
+                    placeholder={getDisplayText(translations.pages.newBill.customerId, language) || 'Customer ID'}
+                    value={customerId}
+                    onChange={(e) => setCustomerId(e.target.value)}
+                    className="customer-field-input"
+                  />
                   <input
                     type="text"
                     placeholder={getDisplayText(translations.pages.newBill.customerName, language)}
@@ -645,6 +666,37 @@ const NewBill = () => {
               <div className="total-row grand-total">
                 <span>{getDisplayText(translations.pages.newBill.grandTotal, language)}:</span>
                 <span>{formatCurrency(grandTotal)}</span>
+              </div>
+            </div>
+
+            <div className="payment-section">
+              <h4>Payment Details</h4>
+              <div className="form-group">
+                <label>Payment Method:</label>
+                <select 
+                  value={paymentMethod}
+                  onChange={(e) => setPaymentMethod(e.target.value)}
+                  className="form-control"
+                >
+                  <option value="CASH">Cash</option>
+                  <option value="CARD">Card</option>
+                  <option value="UPI">UPI</option>
+                  <option value="BANK_TRANSFER">Bank Transfer</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label>Amount Paid:</label>
+                <input
+                  type="number"
+                  value={paidAmount}
+                  onChange={(e) => setPaidAmount(parseFloat(e.target.value) || 0)}
+                  placeholder="Enter amount paid"
+                  className="form-control"
+                  step="0.01"
+                  min="0"
+                  max={grandTotal}
+                />
+                <small>Leave as 0 for full credit</small>
               </div>
             </div>
 
@@ -1098,6 +1150,52 @@ const NewBill = () => {
           color: #28a745;
           border-bottom: 2px solid #28a745;
           margin-top: 10px;
+        }
+
+        .payment-section {
+          margin: 20px 0;
+          padding: 15px;
+          background: #f8f9fa;
+          border-radius: 6px;
+          border-left: 4px solid #6f42c1;
+        }
+
+        .payment-section h4 {
+          margin-top: 0;
+          color: #6f42c1;
+          margin-bottom: 15px;
+        }
+
+        .form-group {
+          margin-bottom: 15px;
+        }
+
+        .form-group label {
+          display: block;
+          margin-bottom: 5px;
+          font-weight: 500;
+          color: #495057;
+        }
+
+        .form-control {
+          width: 100%;
+          padding: 8px 12px;
+          border: 1px solid #ced4da;
+          border-radius: 4px;
+          font-size: 14px;
+        }
+
+        .form-control:focus {
+          border-color: #6f42c1;
+          outline: none;
+          box-shadow: 0 0 0 0.2rem rgba(111, 66, 193, 0.25);
+        }
+
+        .form-group small {
+          display: block;
+          margin-top: 5px;
+          color: #6c757d;
+          font-size: 12px;
         }
 
         .action-buttons {

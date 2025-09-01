@@ -61,6 +61,7 @@
       invoiceNo: `INV-${Date.now()}`,
       date: new Date().toISOString().split('T')[0],
       customerName: '',
+      customerId: null,
       mobile: '',
       address: '',
       paymentMode: 'cash',
@@ -70,7 +71,8 @@
       subTotal: '0.00',
       totalGst: '0.00',
       grandTotal: '0.00',
-      balance: '0.00'
+      balance: '0.00',
+      customerId: null
     });
 
     // Debounced search function
@@ -113,30 +115,56 @@
       };
     }, [debouncedSearch]);
 
-    // Handle search input change
-    const handleSearchChange = (e, index) => {
-      const value = e.target.value;
-      const updatedSearchTerms = [...searchTerms];
-      updatedSearchTerms[index] = value;
-      setSearchTerms(updatedSearchTerms);
-      
-      // Clear selected item if user starts typing again
-      if (selectedItem && value !== selectedItem.itemName) {
-        setSelectedItem(null);
-      }
-      
-      if (value.trim()) {
-        const updatedShowResults = [...showSearchResults];
-        updatedShowResults[index] = true;
-        setShowSearchResults(updatedShowResults);
-        debouncedSearch(value, index);
-      } else {
-        const updatedShowResults = [...showSearchResults];
-        updatedShowResults[index] = false;
-        setShowSearchResults(updatedShowResults);
+    const handleSearch = useCallback(async (term, index) => {
+      if (!term.trim()) {
         const updatedSearchResults = [...searchResults];
         updatedSearchResults[index] = [];
         setSearchResults(updatedSearchResults);
+        return;
+      }
+    
+      try {
+        const response = await axios.get(`${API_BASE_URL}/items/search`, {
+          params: { q: term }
+        });
+        
+        const updatedSearchResults = [...searchResults];
+        updatedSearchResults[index] = response.data || [];
+        setSearchResults(updatedSearchResults);
+    
+        // Show results if there are any
+        if (response.data?.length > 0) {
+          const updatedShowResults = [...showSearchResults];
+          updatedShowResults[index] = true;
+          setShowSearchResults(updatedShowResults);
+        }
+      } catch (error) {
+        console.error('Error searching items:', error);
+        const updatedSearchResults = [...searchResults];
+        updatedSearchResults[index] = [];
+        setSearchResults(updatedSearchResults);
+      }
+    }, [searchResults, showSearchResults]);
+    
+    // Handle search input change
+    const handleSearchChange = (e, index) => {
+      const value = e.target.value;
+      const newSearchTerms = [...searchTerms];
+      newSearchTerms[index] = value;
+      setSearchTerms(newSearchTerms);
+      
+      // Only search if 2+ characters
+      if (value.trim().length >= 2) {
+        handleSearch(value.trim(), index);
+      } else {
+        const updatedSearchResults = [...searchResults];
+        updatedSearchResults[index] = [];
+        setSearchResults(updatedSearchResults);
+        setShowSearchResults(prev => {
+          const newShowResults = [...prev];
+          newShowResults[index] = false;
+          return newShowResults;
+        });
       }
     };
 
@@ -488,6 +516,7 @@ useEffect(() => {
         customerName: '',
         mobile: '',
         address: '',
+        customerId: null, 
         paymentMode: 'cash',
         receivedAmount: '',
         balance: '0.00',
@@ -520,7 +549,10 @@ useEffect(() => {
           
           // Existing fields
           customerName: formData.customerName || 'Walk-in Customer',
-          customerPhone: formData.mobile || '',
+          phoneNumber: formData.mobile || '',
+          address: formData.address || '',  
+          customerId: formData.customerId ? Number(formData.customerId) : null,
+          paidAmount: parseFloat(formData.receivedAmount || 0),  
           paymentMode: formData.paymentMode || 'cash',
           subTotal: parseFloat(formData.subTotal || 0),
           totalGst: parseFloat(formData.totalGst || 0),
@@ -698,6 +730,15 @@ useEffect(() => {
               </div>
             </div>
             <div className="form-group">
+              <label>Customer ID</label>
+              <input
+                type="text"
+                value={formData.customerId || ""}
+                onChange={(e) => handleInputChange('customerId', e.target.value)}
+                placeholder="Enter customer ID"
+              />
+            </div>
+            <div className="form-group">
               <label>{t('pages.newBill.address')}</label>
               <textarea
                 value={formData.address|| ""}
@@ -747,29 +788,40 @@ useEffect(() => {
       <input
         type="text"
         ref={el => searchInputRefs.current[index] = el}
-        value={items[index]?.itemName || (isScanning && scanningRow === index ? barcodeValue : searchTerms[index] || '')}
+        value={isScanning && scanningRow === index ? barcodeValue : (searchTerms[index] || '')}
         onChange={(e) => {
           const value = e.target.value;
-          setBarcodeValue(value);
-          
           if (isScanning && scanningRow === index) {
+            setBarcodeValue(value);
             if (value.length >= 8) {
-              const barcode = value.trim();
-              handleBarcodeScan(barcode, index);
+              handleBarcodeScan(value.trim(), index);
             }
           } else {
-            handleSearchChange(e, index);
+            const newSearchTerms = [...searchTerms];
+            newSearchTerms[index] = value;
+            setSearchTerms(newSearchTerms);
+            if (value.trim().length >= 2) {
+              handleSearch(value.trim(), index);
+            } else {
+              const updatedSearchResults = [...searchResults];
+              updatedSearchResults[index] = [];
+              setSearchResults(updatedSearchResults);
+            }
           }
         }}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' && isScanning && scanningRow === index) {
-          e.preventDefault();
-          const barcode = barcodeValue.trim();
-          if (barcode.length >= 6) {
-            handleBarcodeScan(barcode, index);
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            if (isScanning && scanningRow === index) {
+              const barcode = barcodeValue.trim();
+              if (barcode.length >= 6) {
+                handleBarcodeScan(barcode, index);
+              }
+            } else if (searchResults[index]?.[0]) {
+              handleItemSelect(searchResults[index][0], index);
+            }
           }
-        }
-      }}
+        }}
       onFocus={() => {
         const updatedShowResults = [...showSearchResults];
         updatedShowResults[index] = true;
@@ -788,8 +840,17 @@ useEffect(() => {
         paddingLeft: '40px',
         paddingRight: '40px',
         height: '40px',
-        border: isScanning && scanningRow === index ? '2px solid #dc3545' : '1px solid #ced4da',
-        boxShadow: isScanning && scanningRow === index ? '0 0 0 0.2rem rgba(220, 53, 69, 0.25)' : 'none'
+        border: isScanning && scanningRow === index 
+          ? '2px solid #dc3545' 
+          : showSearchResults[index] && searchResults[index]?.length > 0 
+            ? '1px solid #80bdff' 
+            : '1px solid #ced4da',
+        boxShadow: isScanning && scanningRow === index 
+          ? '0 0 0 0.2rem rgba(220, 53, 69, 0.25)' 
+          : showSearchResults[index] && searchResults[index]?.length > 0
+            ? '0 0 0 0.2rem rgba(0, 123, 255, 0.25)'
+            : 'none',
+        transition: 'border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out'
       }}
     />
       <button
